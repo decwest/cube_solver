@@ -1302,6 +1302,1146 @@ bool parse_move_sequence(const std::string& text,
   return true;
 }
 
+struct OrbitSlot {
+  Vec3 pos;
+  Face face = U;
+};
+
+bool operator==(const OrbitSlot& a, const OrbitSlot& b) {
+  return a.pos == b.pos && a.face == b.face;
+}
+
+OrbitSlot slot_from_facelet(Face face, int row, int col, int size) {
+  const int half = size / 2;
+  const Vec3 normal = face_normal(face);
+  const Vec3 col_basis = face_col_basis(face);
+  const Vec3 row_basis = face_row_basis(face);
+  return {
+      normal * half + col_basis * (col - half) + row_basis * (row - half),
+      face,
+  };
+}
+
+bool layer_selected_for_size(const Vec3& pos, int size, Face face, int width) {
+  const int half = size / 2;
+  const int limit = half - width + 1;
+  switch (face) {
+    case U:
+      return pos.y >= limit;
+    case R:
+      return pos.x >= limit;
+    case F:
+      return pos.z >= limit;
+    case D:
+      return pos.y <= -limit;
+    case L:
+      return pos.x <= -limit;
+    case B:
+      return pos.z <= -limit;
+  }
+  throw std::runtime_error("invalid face");
+}
+
+OrbitSlot apply_move_to_slot(const OrbitSlot& slot, int size, const Move& move) {
+  OrbitSlot current = slot;
+  for (int turn = 0; turn < move.turns; ++turn) {
+    if (!layer_selected_for_size(current.pos, size, move.face, move.width)) {
+      continue;
+    }
+    const int axis = kFaceAxes[move.face];
+    const int sign = face_base_rotation_sign(move.face);
+    current.pos = rotate_axis_once(current.pos, axis, sign);
+    current.face = normal_to_face(
+        rotate_axis_once(face_normal(current.face), axis, sign));
+  }
+  return current;
+}
+
+template <size_t N>
+std::array<uint8_t, N> build_orbit_perm(const std::array<OrbitSlot, N>& slots,
+                                        int size,
+                                        const Move& move) {
+  std::array<uint8_t, N> perm{};
+  for (size_t src = 0; src < N; ++src) {
+    const OrbitSlot moved = apply_move_to_slot(slots[src], size, move);
+    bool found = false;
+    for (size_t dst = 0; dst < N; ++dst) {
+      if (slots[dst] == moved) {
+        perm[dst] = static_cast<uint8_t>(src);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw std::runtime_error("failed to build orbit permutation");
+    }
+  }
+  return perm;
+}
+
+template <size_t N>
+std::array<uint8_t, N> apply_orbit_perm(const std::array<uint8_t, N>& state,
+                                        const std::array<uint8_t, N>& perm) {
+  std::array<uint8_t, N> next{};
+  for (size_t dst = 0; dst < N; ++dst) {
+    next[dst] = state[perm[dst]];
+  }
+  return next;
+}
+
+std::string move_token(const Move& move) {
+  std::string token(1, kFaceChars[move.face]);
+  if (move.width == 2) {
+    token += 'w';
+  } else if (move.width > 2) {
+    token = std::to_string(move.width) + token + "w";
+  }
+  if (move.turns == 2) {
+    token += '2';
+  } else if (move.turns == 3) {
+    token += '\'';
+  }
+iま  return token;
+}
+
+std::vector<Move> simplify_move_sequence(const std::vector<Move>& moves) {
+  std::vector<Move> simplified;
+  for (const Move& move : moves) {
+    if (!simplified.empty() && simplified.back().face == move.face &&
+        simplified.back().width == move.width) {
+      simplified.back().turns = (simplified.back().turns + move.turns) % 4;
+      if (simplified.back().turns == 0) {
+        simplified.pop_back();
+      }
+    } else {
+      simplified.push_back(move);
+    }
+  }
+  return simplified;
+}
+
+std::vector<Move> build_reduction_moves_5() {
+  std::vector<Move> moves;
+  moves.reserve(36);
+  for (Face face : {U, R, F, D, L, B}) {
+    for (int width : {2, 1}) {
+      for (int turns : {1, 2, 3}) {
+        moves.push_back({face, width, turns});
+      }
+    }
+  }
+  return moves;
+}
+
+const std::array<OrbitSlot, 24> kXCenterSlots5 = {{
+    slot_from_facelet(U, 1, 1, 5), slot_from_facelet(U, 1, 3, 5),
+    slot_from_facelet(U, 3, 1, 5), slot_from_facelet(U, 3, 3, 5),
+    slot_from_facelet(R, 1, 1, 5), slot_from_facelet(R, 1, 3, 5),
+    slot_from_facelet(R, 3, 1, 5), slot_from_facelet(R, 3, 3, 5),
+    slot_from_facelet(F, 1, 1, 5), slot_from_facelet(F, 1, 3, 5),
+    slot_from_facelet(F, 3, 1, 5), slot_from_facelet(F, 3, 3, 5),
+    slot_from_facelet(D, 1, 1, 5), slot_from_facelet(D, 1, 3, 5),
+    slot_from_facelet(D, 3, 1, 5), slot_from_facelet(D, 3, 3, 5),
+    slot_from_facelet(L, 1, 1, 5), slot_from_facelet(L, 1, 3, 5),
+    slot_from_facelet(L, 3, 1, 5), slot_from_facelet(L, 3, 3, 5),
+    slot_from_facelet(B, 1, 1, 5), slot_from_facelet(B, 1, 3, 5),
+    slot_from_facelet(B, 3, 1, 5), slot_from_facelet(B, 3, 3, 5),
+}};
+
+const std::array<OrbitSlot, 24> kTCenterSlots5 = {{
+    slot_from_facelet(U, 1, 2, 5), slot_from_facelet(U, 2, 1, 5),
+    slot_from_facelet(U, 2, 3, 5), slot_from_facelet(U, 3, 2, 5),
+    slot_from_facelet(R, 1, 2, 5), slot_from_facelet(R, 2, 1, 5),
+    slot_from_facelet(R, 2, 3, 5), slot_from_facelet(R, 3, 2, 5),
+    slot_from_facelet(F, 1, 2, 5), slot_from_facelet(F, 2, 1, 5),
+    slot_from_facelet(F, 2, 3, 5), slot_from_facelet(F, 3, 2, 5),
+    slot_from_facelet(D, 1, 2, 5), slot_from_facelet(D, 2, 1, 5),
+    slot_from_facelet(D, 2, 3, 5), slot_from_facelet(D, 3, 2, 5),
+    slot_from_facelet(L, 1, 2, 5), slot_from_facelet(L, 2, 1, 5),
+    slot_from_facelet(L, 2, 3, 5), slot_from_facelet(L, 3, 2, 5),
+    slot_from_facelet(B, 1, 2, 5), slot_from_facelet(B, 2, 1, 5),
+    slot_from_facelet(B, 2, 3, 5), slot_from_facelet(B, 3, 2, 5),
+}};
+
+struct CenterReductionState {
+  std::array<uint8_t, 24> x{};
+  std::array<uint8_t, 24> t{};
+};
+
+struct CenterReductionKey {
+  uint64_t x = 0;
+  uint64_t t = 0;
+};
+
+bool operator==(const CenterReductionKey& a, const CenterReductionKey& b) {
+  return a.x == b.x && a.t == b.t;
+}
+
+struct CenterReductionKeyHash {
+  size_t operator()(const CenterReductionKey& key) const {
+    const uint64_t mixed = key.x ^ (key.t + 0x9e3779b97f4a7c15ULL +
+                                    (key.x << 6) + (key.x >> 2));
+    return std::hash<uint64_t>{}(mixed);
+  }
+};
+
+uint64_t encode_base6(const std::array<uint8_t, 24>& values) {
+  uint64_t encoded = 0;
+  for (uint8_t value : values) {
+    encoded = encoded * 6 + value;
+  }
+  return encoded;
+}
+
+template <size_t N>
+std::array<uint8_t, N> extract_orbit_colors(const CubeModel& model,
+                                            const std::string& state,
+                                            const std::array<OrbitSlot, N>& slots) {
+  std::array<uint8_t, N> values{};
+  for (size_t i = 0; i < N; ++i) {
+    const int face =
+        face_from_char(state[model.index_of(slots[i].pos, slots[i].face)]);
+    if (face < 0) {
+      throw std::runtime_error("invalid color in orbit extraction");
+    }
+    values[i] = static_cast<uint8_t>(face);
+  }
+  return values;
+}
+
+class OrbitPatternDB4 {
+ public:
+  OrbitPatternDB4() = default;
+
+  OrbitPatternDB4(const std::vector<std::array<uint8_t, 24>>& perms,
+                  const std::array<uint8_t, 24>& goal) {
+    build_masks();
+    build_move_table(perms);
+    build_distance_tables(goal);
+  }
+
+  int heuristic(const std::array<uint8_t, 24>& state) const {
+    std::array<uint32_t, 6> masks{};
+    for (size_t i = 0; i < state.size(); ++i) {
+      masks[state[i]] |= (1u << i);
+    }
+    int best = 0;
+    for (int color = 0; color < 6; ++color) {
+      const auto it = mask_to_coord_.find(masks[color]);
+      if (it == mask_to_coord_.end()) {
+        throw std::runtime_error("orbit mask lookup failed");
+      }
+      best = std::max(best, static_cast<int>(dist_by_color_[color][it->second]));
+    }
+    return best;
+  }
+
+ private:
+  void build_masks() {
+    coord_to_mask_.reserve(10626);
+    mask_to_coord_.reserve(12000);
+    for (int a = 0; a < 21; ++a) {
+      for (int b = a + 1; b < 22; ++b) {
+        for (int c = b + 1; c < 23; ++c) {
+          for (int d = c + 1; d < 24; ++d) {
+            const uint32_t mask =
+                (1u << a) | (1u << b) | (1u << c) | (1u << d);
+            mask_to_coord_[mask] =
+                static_cast<uint16_t>(coord_to_mask_.size());
+            coord_to_mask_.push_back(mask);
+          }
+        }
+      }
+    }
+  }
+
+  uint32_t apply_mask_perm(uint32_t mask, const std::array<uint8_t, 24>& perm) {
+    uint32_t next = 0;
+    for (int dst = 0; dst < 24; ++dst) {
+      if (mask & (1u << perm[dst])) {
+        next |= (1u << dst);
+      }
+    }
+    return next;
+  }
+
+  void build_move_table(const std::vector<std::array<uint8_t, 24>>& perms) {
+    move_table_.resize(coord_to_mask_.size());
+    for (size_t coord = 0; coord < coord_to_mask_.size(); ++coord) {
+      for (size_t move = 0; move < perms.size(); ++move) {
+        const uint32_t next_mask =
+            apply_mask_perm(coord_to_mask_[coord], perms[move]);
+        move_table_[coord].push_back(mask_to_coord_.at(next_mask));
+      }
+    }
+  }
+
+  void build_distance_tables(const std::array<uint8_t, 24>& goal) {
+    std::array<uint32_t, 6> target_masks{};
+    for (size_t i = 0; i < goal.size(); ++i) {
+      target_masks[goal[i]] |= (1u << i);
+    }
+    for (int color = 0; color < 6; ++color) {
+      auto& dist = dist_by_color_[color];
+      dist.assign(coord_to_mask_.size(), kUnknownDepth);
+      std::queue<uint16_t> q;
+      const uint16_t root = mask_to_coord_.at(target_masks[color]);
+      dist[root] = 0;
+      q.push(root);
+      while (!q.empty()) {
+        const uint16_t current = q.front();
+        q.pop();
+        const uint8_t next_depth = static_cast<uint8_t>(dist[current] + 1);
+        for (uint16_t next : move_table_[current]) {
+          if (dist[next] == kUnknownDepth) {
+            dist[next] = next_depth;
+            q.push(next);
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<uint32_t> coord_to_mask_;
+  std::unordered_map<uint32_t, uint16_t> mask_to_coord_;
+  std::vector<std::vector<uint16_t>> move_table_;
+  std::array<std::vector<uint8_t>, 6> dist_by_color_;
+};
+
+class CenterReductionSolver5 {
+ public:
+  CenterReductionSolver5()
+      : model_(5),
+        moves_(build_reduction_moves_5()),
+        goal_x_(extract_orbit_colors(model_, model_.solved_state(), kXCenterSlots5)),
+        goal_t_(extract_orbit_colors(model_, model_.solved_state(), kTCenterSlots5)) {
+    move_tokens_.reserve(moves_.size());
+    x_perms_.reserve(moves_.size());
+    t_perms_.reserve(moves_.size());
+    for (const Move& move : moves_) {
+      move_tokens_.push_back(move_token(move));
+      x_perms_.push_back(build_orbit_perm(kXCenterSlots5, 5, move));
+      t_perms_.push_back(build_orbit_perm(kTCenterSlots5, 5, move));
+    }
+    x_pdb_ = OrbitPatternDB4(x_perms_, goal_x_);
+    t_pdb_ = OrbitPatternDB4(t_perms_, goal_t_);
+  }
+
+  const CubeModel& model() const { return model_; }
+
+  CenterReductionState extract(const std::string& state) const {
+    return {
+        extract_orbit_colors(model_, state, kXCenterSlots5),
+        extract_orbit_colors(model_, state, kTCenterSlots5),
+    };
+  }
+
+  bool solved(const CenterReductionState& state) const {
+    return state.x == goal_x_ && state.t == goal_t_;
+  }
+
+  std::optional<std::vector<int>> solve(const CenterReductionState& start) const {
+    if (solved(start)) {
+      return std::vector<int>{};
+    }
+    const int lower_bound = heuristic(start);
+    for (int depth = lower_bound; depth <= 40; ++depth) {
+      std::vector<int> path;
+      std::unordered_map<CenterReductionKey, int, CenterReductionKeyHash> seen;
+      path.reserve(depth);
+      if (dfs(start, depth, -1, -1, seen, path)) {
+        return path;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::vector<Move> moves_from_indices(const std::vector<int>& indices) const {
+    std::vector<Move> out;
+    out.reserve(indices.size());
+    for (int index : indices) {
+      out.push_back(moves_[index]);
+    }
+    return out;
+  }
+
+  std::string stringify(const std::vector<int>& indices) const {
+    std::ostringstream oss;
+    for (size_t i = 0; i < indices.size(); ++i) {
+      if (i != 0) {
+        oss << ' ';
+      }
+      oss << move_tokens_[indices[i]];
+    }
+    return oss.str();
+  }
+
+ private:
+  int heuristic(const CenterReductionState& state) const {
+    const int x = x_pdb_.heuristic(state.x);
+    const int t = t_pdb_.heuristic(state.t);
+    return std::max({x, t, (x + t + 1) / 2});
+  }
+
+  CenterReductionKey encode(const CenterReductionState& state) const {
+    return {encode_base6(state.x), encode_base6(state.t)};
+  }
+
+  CenterReductionState apply_move(const CenterReductionState& state,
+                                  int move_index) const {
+    return {
+        apply_orbit_perm(state.x, x_perms_[move_index]),
+        apply_orbit_perm(state.t, t_perms_[move_index]),
+    };
+  }
+
+  bool skip_move(int last_face,
+                 int last_width,
+                 int move_index) const {
+    if (last_face < 0) {
+      return false;
+    }
+    return last_face == static_cast<int>(moves_[move_index].face) &&
+           last_width == moves_[move_index].width;
+  }
+
+  bool dfs(const CenterReductionState& state,
+           int depth_left,
+           int last_face,
+           int last_width,
+           std::unordered_map<CenterReductionKey, int, CenterReductionKeyHash>& seen,
+           std::vector<int>& path) const {
+    const int estimate = heuristic(state);
+    if (estimate > depth_left) {
+      return false;
+    }
+    if (solved(state)) {
+      return true;
+    }
+    if (depth_left == 0) {
+      return false;
+    }
+    const CenterReductionKey key = encode(state);
+    const auto it = seen.find(key);
+    if (it != seen.end() && it->second >= depth_left) {
+      return false;
+    }
+    seen[key] = depth_left;
+    for (size_t move_index = 0; move_index < moves_.size(); ++move_index) {
+      if (skip_move(last_face, last_width, static_cast<int>(move_index))) {
+        continue;
+      }
+      path.push_back(static_cast<int>(move_index));
+      const CenterReductionState next =
+          apply_move(state, static_cast<int>(move_index));
+      if (dfs(next,
+              depth_left - 1,
+              static_cast<int>(moves_[move_index].face),
+              moves_[move_index].width,
+              seen,
+              path)) {
+        return true;
+      }
+      path.pop_back();
+    }
+    return false;
+  }
+
+  CubeModel model_;
+  std::vector<Move> moves_;
+  std::vector<std::string> move_tokens_;
+  std::vector<std::array<uint8_t, 24>> x_perms_;
+  std::vector<std::array<uint8_t, 24>> t_perms_;
+  std::array<uint8_t, 24> goal_x_{};
+  std::array<uint8_t, 24> goal_t_{};
+  OrbitPatternDB4 x_pdb_;
+  OrbitPatternDB4 t_pdb_;
+};
+
+struct WingPosition5 {
+  Vec3 pos;
+  std::array<Face, 2> faces;
+  int line = -1;
+};
+
+const std::array<WingPosition5, 24> kWingPositions5 = {{
+    {{-1, 2, 2}, {U, F}, 0}, {{1, 2, 2}, {U, F}, 0},
+    {{2, 2, 1}, {U, R}, 1}, {{2, 2, -1}, {U, R}, 1},
+    {{-1, 2, -2}, {U, B}, 2}, {{1, 2, -2}, {U, B}, 2},
+    {{-2, 2, -1}, {U, L}, 3}, {{-2, 2, 1}, {U, L}, 3},
+    {{-1, -2, 2}, {D, F}, 4}, {{1, -2, 2}, {D, F}, 4},
+    {{2, -2, 1}, {D, R}, 5}, {{2, -2, -1}, {D, R}, 5},
+    {{-1, -2, -2}, {D, B}, 6}, {{1, -2, -2}, {D, B}, 6},
+    {{-2, -2, -1}, {D, L}, 7}, {{-2, -2, 1}, {D, L}, 7},
+    {{2, 1, 2}, {F, R}, 8}, {{2, -1, 2}, {F, R}, 8},
+    {{-2, 1, 2}, {F, L}, 9}, {{-2, -1, 2}, {F, L}, 9},
+    {{-2, 1, -2}, {B, L}, 10}, {{-2, -1, -2}, {B, L}, 10},
+    {{2, 1, -2}, {B, R}, 11}, {{2, -1, -2}, {B, R}, 11},
+}};
+
+struct MidgeSlot5 {
+  Vec3 pos;
+  std::array<Face, 2> faces;
+};
+
+const std::array<MidgeSlot5, 12> kMidgeSlots5 = {{
+    {{0, 2, 2}, {U, F}},
+    {{2, 2, 0}, {U, R}},
+    {{0, 2, -2}, {U, B}},
+    {{-2, 2, 0}, {U, L}},
+    {{0, -2, 2}, {D, F}},
+    {{2, -2, 0}, {D, R}},
+    {{0, -2, -2}, {D, B}},
+    {{-2, -2, 0}, {D, L}},
+    {{2, 0, 2}, {F, R}},
+    {{-2, 0, 2}, {F, L}},
+    {{-2, 0, -2}, {B, L}},
+    {{2, 0, -2}, {B, R}},
+}};
+
+struct EdgeReductionMove5 {
+  std::vector<Move> sequence;
+  std::string token;
+  std::array<uint8_t, 12> midge_dst{};
+  std::array<uint8_t, 12> midge_flip{};
+  std::array<uint8_t, 24> wing_dst{};
+  std::array<uint8_t, 24> wing_flip{};
+  int inverse = -1;
+};
+
+struct EdgeReductionState5 {
+  std::array<uint8_t, 12> midge_type{};
+  std::array<uint8_t, 12> midge_ori{};
+  std::array<uint8_t, 24> wing_type{};
+  std::array<uint8_t, 24> wing_ori{};
+};
+
+template <size_t N>
+std::string sorted_pair_key(const std::array<Face, N>& faces) {
+  std::string key;
+  key.push_back(kFaceChars[faces[0]]);
+  key.push_back(kFaceChars[faces[1]]);
+  std::sort(key.begin(), key.end());
+  return key;
+}
+
+std::array<Face, 2> rotate_faces_once(const std::array<Face, 2>& faces,
+                                      int axis,
+                                      int sign) {
+  return {
+      normal_to_face(rotate_axis_once(face_normal(faces[0]), axis, sign)),
+      normal_to_face(rotate_axis_once(face_normal(faces[1]), axis, sign)),
+  };
+}
+
+template <size_t N, typename Slot>
+std::pair<int, uint8_t> locate_rotated_piece(const std::array<Slot, N>& slots,
+                                             const Vec3& pos,
+                                             const std::array<Face, 2>& faces) {
+  for (size_t i = 0; i < slots.size(); ++i) {
+    if (!(slots[i].pos == pos)) {
+      continue;
+    }
+    if (slots[i].faces == faces) {
+      return {static_cast<int>(i), 0};
+    }
+    if (slots[i].faces[0] == faces[1] && slots[i].faces[1] == faces[0]) {
+      return {static_cast<int>(i), 1};
+    }
+  }
+  throw std::runtime_error("rotated edge piece lookup failed");
+}
+
+template <size_t N, typename Slot>
+std::pair<std::array<uint8_t, N>, std::array<uint8_t, N>> build_exact_edge_effect(
+    const std::array<Slot, N>& slots,
+    int size,
+    const std::vector<Move>& sequence) {
+  std::array<uint8_t, N> dst{};
+  std::array<uint8_t, N> flip{};
+  for (size_t src = 0; src < N; ++src) {
+    Vec3 pos = slots[src].pos;
+    std::array<Face, 2> faces = slots[src].faces;
+    for (const Move& move : sequence) {
+      for (int turn = 0; turn < move.turns; ++turn) {
+        if (!layer_selected_for_size(pos, size, move.face, move.width)) {
+          continue;
+        }
+        const int axis = kFaceAxes[move.face];
+        const int sign = face_base_rotation_sign(move.face);
+        pos = rotate_axis_once(pos, axis, sign);
+        faces = rotate_faces_once(faces, axis, sign);
+      }
+    }
+    const auto [dst_index, dst_flip] = locate_rotated_piece(slots, pos, faces);
+    dst[src] = static_cast<uint8_t>(dst_index);
+    flip[src] = dst_flip;
+  }
+  return {dst, flip};
+}
+
+std::string join_move_tokens(const std::vector<Move>& sequence) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < sequence.size(); ++i) {
+    if (i != 0) {
+      oss << ' ';
+    }
+    oss << move_token(sequence[i]);
+  }
+  return oss.str();
+}
+
+std::string canonical_edge_effect_key(const EdgeReductionMove5& effect) {
+  std::string key;
+  key.reserve(12 * 2 + 24 * 2);
+  for (int i = 0; i < 12; ++i) {
+    key.push_back(static_cast<char>(effect.midge_dst[i]));
+    key.push_back(static_cast<char>(effect.midge_flip[i]));
+  }
+  for (int i = 0; i < 24; ++i) {
+    key.push_back(static_cast<char>(effect.wing_dst[i]));
+    key.push_back(static_cast<char>(effect.wing_flip[i]));
+  }
+  return key;
+}
+
+EdgeReductionState5 apply_edge_reduction_move(const EdgeReductionState5& state,
+                                              const EdgeReductionMove5& move) {
+  EdgeReductionState5 next;
+  for (int src = 0; src < 12; ++src) {
+    const int dst = move.midge_dst[src];
+    next.midge_type[dst] = state.midge_type[src];
+    next.midge_ori[dst] = static_cast<uint8_t>(state.midge_ori[src] ^
+                                               move.midge_flip[src]);
+  }
+  for (int src = 0; src < 24; ++src) {
+    const int dst = move.wing_dst[src];
+    next.wing_type[dst] = state.wing_type[src];
+    next.wing_ori[dst] = static_cast<uint8_t>(state.wing_ori[src] ^
+                                              move.wing_flip[src]);
+  }
+  return next;
+}
+
+class PairPatternIndexer24 {
+ public:
+  PairPatternIndexer24() {
+    mask_to_coord_.assign(1 << 24, -1);
+    coord_to_pair_.reserve(276);
+    for (int a = 0; a < 23; ++a) {
+      for (int b = a + 1; b < 24; ++b) {
+        const uint32_t mask = (1u << a) | (1u << b);
+        mask_to_coord_[mask] = static_cast<int>(coord_to_pair_.size());
+        coord_to_pair_.push_back({static_cast<uint8_t>(a), static_cast<uint8_t>(b)});
+      }
+    }
+  }
+
+  int coord(int a, int b) const {
+    if (a > b) {
+      std::swap(a, b);
+    }
+    return mask_to_coord_[(1u << a) | (1u << b)];
+  }
+
+  const std::pair<uint8_t, uint8_t>& pair_at(int coord) const {
+    return coord_to_pair_[coord];
+  }
+
+ private:
+  std::vector<int> mask_to_coord_;
+  std::vector<std::pair<uint8_t, uint8_t>> coord_to_pair_;
+};
+
+class EdgePatternDB5 {
+ public:
+  EdgePatternDB5(const PairPatternIndexer24& pairs,
+                 const std::vector<EdgeReductionMove5>& moves)
+      : pair_indexer_(pairs), moves_(moves) {
+    build_move_table();
+    build_distance_tables();
+  }
+
+  std::array<uint8_t, 12> distances(const EdgeReductionState5& state) const {
+    std::array<uint8_t, 12> out{};
+    std::array<int, 12> midge_pos{};
+    std::array<uint8_t, 12> midge_ori{};
+    for (int pos = 0; pos < 12; ++pos) {
+      const int type = state.midge_type[pos];
+      midge_pos[type] = pos;
+      midge_ori[type] = state.midge_ori[pos];
+    }
+    std::array<std::array<int, 2>, 12> wing_pos{};
+    std::array<std::array<uint8_t, 2>, 12> wing_ori{};
+    std::array<int, 12> counts{};
+    for (int pos = 0; pos < 24; ++pos) {
+      const int type = state.wing_type[pos];
+      const int slot = counts[type]++;
+      wing_pos[type][slot] = pos;
+      wing_ori[type][slot] = state.wing_ori[pos];
+    }
+    for (int type = 0; type < 12; ++type) {
+      int a = wing_pos[type][0];
+      int b = wing_pos[type][1];
+      uint8_t oa = wing_ori[type][0];
+      uint8_t ob = wing_ori[type][1];
+      if (a > b) {
+        std::swap(a, b);
+        std::swap(oa, ob);
+      }
+      const int coord = encode_coord(midge_pos[type], midge_ori[type], a, oa, b, ob);
+      out[type] = paired_dist_[coord];
+    }
+    return out;
+  }
+
+ private:
+  int encode_coord(int midge_pos,
+                   int midge_ori,
+                   int wing_a,
+                   int ori_a,
+                   int wing_b,
+                   int ori_b) const {
+    const int pair_coord = pair_indexer_.coord(wing_a, wing_b);
+    return (((midge_pos * 2 + midge_ori) * 276) + pair_coord) * 4 +
+           (ori_a << 1) + ori_b;
+  }
+
+  void decode_coord(int coord,
+                    int* midge_pos,
+                    int* midge_ori,
+                    int* wing_a,
+                    int* ori_a,
+                    int* wing_b,
+                    int* ori_b) const {
+    const int ori_bits = coord % 4;
+    coord /= 4;
+    const int pair_coord = coord % 276;
+    coord /= 276;
+    *midge_ori = coord % 2;
+    *midge_pos = coord / 2;
+    const auto pair = pair_indexer_.pair_at(pair_coord);
+    *wing_a = pair.first;
+    *wing_b = pair.second;
+    *ori_a = (ori_bits >> 1) & 1;
+    *ori_b = ori_bits & 1;
+  }
+
+  void build_move_table() {
+    move_table_.assign(26496, std::vector<uint16_t>(moves_.size(), 0));
+    for (int coord = 0; coord < 26496; ++coord) {
+      int midge_pos = 0;
+      int midge_ori = 0;
+      int wing_a = 0;
+      int wing_b = 0;
+      int ori_a = 0;
+      int ori_b = 0;
+      decode_coord(coord, &midge_pos, &midge_ori, &wing_a, &ori_a, &wing_b, &ori_b);
+      for (size_t move_index = 0; move_index < moves_.size(); ++move_index) {
+        const auto& move = moves_[move_index];
+        const int next_midge_pos = move.midge_dst[midge_pos];
+        const int next_midge_ori = midge_ori ^ move.midge_flip[midge_pos];
+        int next_wing_a = move.wing_dst[wing_a];
+        int next_wing_b = move.wing_dst[wing_b];
+        int next_ori_a = ori_a ^ move.wing_flip[wing_a];
+        int next_ori_b = ori_b ^ move.wing_flip[wing_b];
+        if (next_wing_a > next_wing_b) {
+          std::swap(next_wing_a, next_wing_b);
+          std::swap(next_ori_a, next_ori_b);
+        }
+        move_table_[coord][move_index] = static_cast<uint16_t>(
+            encode_coord(next_midge_pos, next_midge_ori,
+                         next_wing_a, next_ori_a,
+                         next_wing_b, next_ori_b));
+      }
+    }
+  }
+
+  void build_distance_tables() {
+    paired_dist_.assign(26496, kUnknownDepth);
+    std::queue<uint16_t> q;
+    for (int line = 0; line < 12; ++line) {
+      for (int ori = 0; ori < 2; ++ori) {
+        const int goal_coord =
+            encode_coord(line, ori, line * 2, ori, line * 2 + 1, ori);
+        if (paired_dist_[goal_coord] != kUnknownDepth) {
+          continue;
+        }
+        paired_dist_[goal_coord] = 0;
+        q.push(static_cast<uint16_t>(goal_coord));
+      }
+    }
+    while (!q.empty()) {
+      const uint16_t current = q.front();
+      q.pop();
+      const uint8_t next_depth = static_cast<uint8_t>(paired_dist_[current] + 1);
+      for (uint16_t next : move_table_[current]) {
+        if (paired_dist_[next] == kUnknownDepth) {
+          paired_dist_[next] = next_depth;
+          q.push(next);
+        }
+      }
+    }
+  }
+
+  const PairPatternIndexer24& pair_indexer_;
+  const std::vector<EdgeReductionMove5>& moves_;
+  std::vector<std::vector<uint16_t>> move_table_;
+  std::vector<uint8_t> paired_dist_;
+};
+
+struct EdgeReductionStateKey5 {
+  std::array<uint8_t, 12> midge_type{};
+  std::array<uint8_t, 12> midge_ori{};
+  std::array<uint8_t, 24> wing_type{};
+  std::array<uint8_t, 24> wing_ori{};
+};
+
+bool operator==(const EdgeReductionStateKey5& a, const EdgeReductionStateKey5& b) {
+  return a.midge_type == b.midge_type && a.midge_ori == b.midge_ori &&
+         a.wing_type == b.wing_type && a.wing_ori == b.wing_ori;
+}
+
+struct EdgeReductionStateKeyHash5 {
+  size_t operator()(const EdgeReductionStateKey5& key) const {
+    uint64_t hash = 1469598103934665603ULL;
+    auto mix = [&hash](uint8_t value) {
+      hash ^= value;
+      hash *= 1099511628211ULL;
+    };
+    for (uint8_t value : key.midge_type) {
+      mix(value);
+    }
+    for (uint8_t value : key.midge_ori) {
+      mix(value);
+    }
+    for (uint8_t value : key.wing_type) {
+      mix(value);
+    }
+    for (uint8_t value : key.wing_ori) {
+      mix(value);
+    }
+    return std::hash<uint64_t>{}(hash);
+  }
+};
+
+class EdgeReductionSolver5 {
+ public:
+  EdgeReductionSolver5() : model_(5), pair_indexer_() {
+    build_edge_type_lookup();
+    build_generators();
+    edge_pdb_.emplace(pair_indexer_, moves_);
+  }
+
+  EdgeReductionState5 extract(const std::string& state) const {
+    EdgeReductionState5 out;
+    for (int pos = 0; pos < 12; ++pos) {
+      const auto& slot = kMidgeSlots5[pos];
+      const char a = state[model_.index_of(slot.pos, slot.faces[0])];
+      const char b = state[model_.index_of(slot.pos, slot.faces[1])];
+      const auto [type, ori] = parse_edge_colors(a, b);
+      out.midge_type[pos] = static_cast<uint8_t>(type);
+      out.midge_ori[pos] = ori;
+    }
+    for (int pos = 0; pos < 24; ++pos) {
+      const auto& slot = kWingPositions5[pos];
+      const char a = state[model_.index_of(slot.pos, slot.faces[0])];
+      const char b = state[model_.index_of(slot.pos, slot.faces[1])];
+      const auto [type, ori] = parse_edge_colors(a, b);
+      out.wing_type[pos] = static_cast<uint8_t>(type);
+      out.wing_ori[pos] = ori;
+    }
+    return out;
+  }
+
+  bool solved(const EdgeReductionState5& state) const {
+    for (int line = 0; line < 12; ++line) {
+      const uint8_t type = state.midge_type[line];
+      const uint8_t ori = state.midge_ori[line];
+      if (state.wing_type[line * 2] != type || state.wing_ori[line * 2] != ori ||
+          state.wing_type[line * 2 + 1] != type ||
+          state.wing_ori[line * 2 + 1] != ori) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::optional<std::vector<int>> solve(const EdgeReductionState5& start) const {
+    if (solved(start)) {
+      return std::vector<int>{};
+    }
+    struct Node {
+      EdgeReductionState5 state;
+      int g = 0;
+      int h = 0;
+      int parent = -1;
+      int move = -1;
+    };
+    struct QueueEntry {
+      int f = 0;
+      int g = 0;
+      int index = -1;
+      bool operator<(const QueueEntry& other) const {
+        if (f != other.f) {
+          return f > other.f;
+        }
+        return g < other.g;
+      }
+    };
+
+    std::priority_queue<QueueEntry> open;
+    std::unordered_map<EdgeReductionStateKey5, int, EdgeReductionStateKeyHash5> best_g;
+    std::vector<Node> nodes;
+    nodes.reserve(200000);
+    const int start_h = heuristic(start);
+    nodes.push_back({start, 0, start_h, -1, -1});
+    best_g[key_from_state(start)] = 0;
+    open.push({start_h, 0, 0});
+
+    constexpr int kMaxNodes = 500000;
+    while (!open.empty()) {
+      const QueueEntry current = open.top();
+      open.pop();
+      const Node& node = nodes[current.index];
+      if (current.g != node.g || current.f != node.g + node.h) {
+        continue;
+      }
+      if (solved(node.state)) {
+        std::vector<int> path;
+        for (int index = current.index; index >= 0 && nodes[index].move >= 0;
+             index = nodes[index].parent) {
+          path.push_back(nodes[index].move);
+        }
+        std::reverse(path.begin(), path.end());
+        return path;
+      }
+      if (static_cast<int>(nodes.size()) >= kMaxNodes) {
+        break;
+      }
+      for (size_t move_index = 0; move_index < moves_.size(); ++move_index) {
+        if (node.move >= 0 &&
+            (static_cast<int>(move_index) == node.move ||
+             moves_[node.move].inverse == static_cast<int>(move_index))) {
+          continue;
+        }
+        const EdgeReductionState5 next_state =
+            apply_edge_reduction_move(node.state, moves_[move_index]);
+        const int next_g = node.g + 1;
+        const EdgeReductionStateKey5 key = key_from_state(next_state);
+        const auto [it, inserted] = best_g.emplace(key, next_g);
+        if (!inserted && it->second <= next_g) {
+          continue;
+        }
+        it->second = next_g;
+        const int next_h = heuristic(next_state);
+        const int next_index = static_cast<int>(nodes.size());
+        nodes.push_back({next_state, next_g, next_h, current.index,
+                         static_cast<int>(move_index)});
+        open.push({next_g + next_h, next_g, next_index});
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::vector<Move> expand_moves(const std::vector<int>& indices) const {
+    std::vector<Move> out;
+    for (int index : indices) {
+      out.insert(out.end(), moves_[index].sequence.begin(), moves_[index].sequence.end());
+    }
+    return out;
+  }
+
+ private:
+  std::pair<int, uint8_t> parse_edge_colors(char a,
+                                            char b) const {
+    std::string key;
+    key.push_back(a);
+    key.push_back(b);
+    std::sort(key.begin(), key.end());
+    const auto it = edge_type_by_key_.find(key);
+    if (it == edge_type_by_key_.end()) {
+      throw std::runtime_error("invalid edge colors in 5x5 reduction");
+    }
+    const int type = it->second;
+    const char canonical_a = kFaceChars[kMidgeSlots5[type].faces[0]];
+    const char canonical_b = kFaceChars[kMidgeSlots5[type].faces[1]];
+    if (a == canonical_a && b == canonical_b) {
+      return {type, 0};
+    }
+    if (a == canonical_b && b == canonical_a) {
+      return {type, 1};
+    }
+    throw std::runtime_error("invalid edge orientation in 5x5 reduction");
+  }
+
+  void build_edge_type_lookup() {
+    for (int i = 0; i < 12; ++i) {
+      edge_type_by_key_[sorted_pair_key(kMidgeSlots5[i].faces)] = i;
+    }
+  }
+
+  void maybe_add_generator(const std::vector<Move>& sequence,
+                           std::unordered_map<std::string, int>* seen_effects) {
+    if (sequence.empty()) {
+      return;
+    }
+    auto [midge_dst, midge_flip] = build_exact_edge_effect(kMidgeSlots5, 5, sequence);
+    auto [wing_dst, wing_flip] = build_exact_edge_effect(kWingPositions5, 5, sequence);
+    EdgeReductionMove5 move;
+    move.sequence = sequence;
+    move.token = join_move_tokens(sequence);
+    move.midge_dst = midge_dst;
+    move.midge_flip = midge_flip;
+    move.wing_dst = wing_dst;
+    move.wing_flip = wing_flip;
+    const std::string key = canonical_edge_effect_key(move);
+    if (const auto it = seen_effects->find(key); it != seen_effects->end()) {
+      return;
+    }
+    bool identity = true;
+    for (int i = 0; i < 12; ++i) {
+      if (move.midge_dst[i] != i || move.midge_flip[i] != 0) {
+        identity = false;
+        break;
+      }
+    }
+    if (identity) {
+      for (int i = 0; i < 24; ++i) {
+        if (move.wing_dst[i] != i || move.wing_flip[i] != 0) {
+          identity = false;
+          break;
+        }
+      }
+    }
+    if (identity) {
+      return;
+    }
+    (*seen_effects)[key] = static_cast<int>(moves_.size());
+    moves_.push_back(std::move(move));
+  }
+
+  void build_generators() {
+    std::unordered_map<std::string, int> seen_effects;
+    for (Face face : {U, R, F, D, L, B}) {
+      for (int turns : {1, 2, 3}) {
+        maybe_add_generator({Move{face, 1, turns}}, &seen_effects);
+      }
+    }
+    for (Face wide_face : {U, R, F}) {
+      const Move wide = {wide_face, 2, 1};
+      const Move wide_inv = {wide_face, 2, 3};
+      for (Face outer_face : {U, R, F, D, L, B}) {
+        if (outer_face == wide_face) {
+          continue;
+        }
+        for (int turns : {1, 2, 3}) {
+          maybe_add_generator({wide, Move{outer_face, 1, turns}, wide_inv},
+                              &seen_effects);
+        }
+      }
+    }
+    for (size_t i = 0; i < moves_.size(); ++i) {
+      std::vector<Move> inverse_sequence;
+      for (auto it = moves_[i].sequence.rbegin(); it != moves_[i].sequence.rend(); ++it) {
+        inverse_sequence.push_back({it->face, it->width, it->turns == 2 ? 2 : (4 - it->turns)});
+      }
+      auto [midge_dst, midge_flip] = build_exact_edge_effect(kMidgeSlots5, 5, inverse_sequence);
+      auto [wing_dst, wing_flip] = build_exact_edge_effect(kWingPositions5, 5, inverse_sequence);
+      EdgeReductionMove5 probe;
+      probe.midge_dst = midge_dst;
+      probe.midge_flip = midge_flip;
+      probe.wing_dst = wing_dst;
+      probe.wing_flip = wing_flip;
+      const std::string key = canonical_edge_effect_key(probe);
+      for (size_t j = 0; j < moves_.size(); ++j) {
+        if (canonical_edge_effect_key(moves_[j]) == key) {
+          moves_[i].inverse = static_cast<int>(j);
+          break;
+        }
+      }
+    }
+    max_types_changed_per_move_ = 1;
+    for (const auto& move : moves_) {
+      int changed = 0;
+      for (int type = 0; type < 12; ++type) {
+        if (move.midge_dst[type] != type || move.midge_flip[type] != 0 ||
+            move.wing_dst[type * 2] != type * 2 || move.wing_flip[type * 2] != 0 ||
+            move.wing_dst[type * 2 + 1] != type * 2 + 1 ||
+            move.wing_flip[type * 2 + 1] != 0) {
+          ++changed;
+        }
+      }
+      max_types_changed_per_move_ = std::max(max_types_changed_per_move_, changed);
+    }
+  }
+
+  EdgeReductionStateKey5 key_from_state(const EdgeReductionState5& state) const {
+    return {state.midge_type, state.midge_ori, state.wing_type, state.wing_ori};
+  }
+
+  int heuristic(const EdgeReductionState5& state) const {
+    const auto distances = edge_pdb_->distances(state);
+    int max_distance = 0;
+    int sum_distance = 0;
+    int unsolved = 0;
+    for (uint8_t distance : distances) {
+      max_distance = std::max(max_distance, static_cast<int>(distance));
+      sum_distance += distance;
+      unsolved += distance != 0 ? 1 : 0;
+    }
+    const int average_bound =
+        (sum_distance + max_types_changed_per_move_ - 1) / max_types_changed_per_move_;
+    const int count_bound =
+        (unsolved + max_types_changed_per_move_ - 1) / max_types_changed_per_move_;
+    return std::max({max_distance, average_bound, count_bound});
+  }
+
+  bool dfs(const EdgeReductionState5& state,
+           int depth_left,
+           int last_move,
+           std::unordered_map<EdgeReductionStateKey5, int, EdgeReductionStateKeyHash5>& seen,
+           std::vector<int>& path) const {
+    const int estimate = heuristic(state);
+    if (estimate > depth_left) {
+      return false;
+    }
+    if (solved(state)) {
+      return true;
+    }
+    if (depth_left == 0) {
+      return false;
+    }
+    const EdgeReductionStateKey5 key = key_from_state(state);
+    const auto it = seen.find(key);
+    if (it != seen.end() && it->second >= depth_left) {
+      return false;
+    }
+    seen[key] = depth_left;
+    for (size_t move_index = 0; move_index < moves_.size(); ++move_index) {
+      if (last_move >= 0 &&
+          (static_cast<int>(move_index) == last_move ||
+           moves_[last_move].inverse == static_cast<int>(move_index))) {
+        continue;
+      }
+      path.push_back(static_cast<int>(move_index));
+      const EdgeReductionState5 next = apply_edge_reduction_move(state, moves_[move_index]);
+      if (dfs(next, depth_left - 1, static_cast<int>(move_index), seen, path)) {
+        return true;
+      }
+      path.pop_back();
+    }
+    return false;
+  }
+
+  CubeModel model_;
+  std::unordered_map<std::string, int> edge_type_by_key_;
+  PairPatternIndexer24 pair_indexer_;
+  std::vector<EdgeReductionMove5> moves_;
+  std::optional<EdgePatternDB5> edge_pdb_;
+  int max_types_changed_per_move_ = 1;
+};
+
 bool centers_solved_5(const std::string& state) {
   for (Face face : {U, R, F, D, L, B}) {
     const int base = static_cast<int>(face) * 25;
@@ -1417,8 +2557,8 @@ Notes:
   - State format is URFDLB face order, 54 chars for 3x3 or 150 chars for 5x5.
   - WRGYOB colors are accepted and normalized to URFDLB.
   - The native solver fully solves arbitrary 3x3 states.
-  - For 5x5, only reduced states are supported for now:
-    centers must already be solved and wing pairs must already be paired.)";
+  - For 5x5, native center reduction is implemented.
+  - Native wing pairing is still not implemented.)";
 }
 
 std::string format_cubie_state(const CubieState& state) {
@@ -1616,15 +2756,44 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    const CubeModel model5(5);
-    if (!centers_solved_5(input.state) || !edge_groups_paired_5(model5, input.state)) {
-      std::cerr
-          << "error: native 5x5 reduction phases (centers / wings) are not "
-             "implemented yet\n";
-      return 1;
+    CenterReductionSolver5 center_solver;
+    EdgeReductionSolver5 edge_solver;
+    std::vector<Move> solution5;
+    std::string reduced_state = input.state;
+    if (!centers_solved_5(reduced_state)) {
+      const auto center_solution = center_solver.solve(center_solver.extract(reduced_state));
+      if (!center_solution.has_value()) {
+        std::cerr << "error: native 5x5 center reduction did not finish within "
+                     "the current search limits\n";
+        return 1;
+      }
+      const auto center_moves = center_solver.moves_from_indices(*center_solution);
+      reduced_state = center_solver.model().apply_moves(reduced_state, center_moves);
+      if (!centers_solved_5(reduced_state)) {
+        std::cerr << "error: internal verification failed for 5x5 center "
+                     "reduction\n";
+        return 1;
+      }
+      solution5.insert(solution5.end(), center_moves.begin(), center_moves.end());
     }
 
-    std::string reduced3 = extract_reduced_3x3_from_5x5(input.state);
+    const auto edge_solution = edge_solver.solve(edge_solver.extract(reduced_state));
+    if (!edge_solution.has_value()) {
+      std::cerr << "error: native 5x5 edge reduction did not finish within "
+                   "the current search limits\n";
+      return 1;
+    }
+    const auto edge_moves = edge_solver.expand_moves(*edge_solution);
+    reduced_state = center_solver.model().apply_moves(reduced_state, edge_moves);
+    if (!centers_solved_5(reduced_state) ||
+        !edge_groups_paired_5(center_solver.model(), reduced_state)) {
+      std::cerr << "error: internal verification failed for 5x5 edge "
+                   "reduction\n";
+      return 1;
+    }
+    solution5.insert(solution5.end(), edge_moves.begin(), edge_moves.end());
+
+    std::string reduced3 = extract_reduced_3x3_from_5x5(reduced_state);
     std::string error;
     auto cubie = facelets_to_cubie(solver3.model(), reduced3, &error);
     if (!cubie.has_value()) {
@@ -1639,14 +2808,23 @@ int main(int argc, char** argv) {
                    "limits\n";
       return 1;
     }
-    const auto moves = solver3.moves_from_indices(*solution);
-    const std::string solved = model5.apply_moves(input.state, moves);
-    if (solved != model5.solved_state()) {
+    const auto reduced_moves = solver3.moves_from_indices(*solution);
+    solution5.insert(solution5.end(), reduced_moves.begin(), reduced_moves.end());
+    solution5 = simplify_move_sequence(solution5);
+    const std::string solved = center_solver.model().apply_moves(input.state, solution5);
+    if (solved != center_solver.model().solved_state()) {
       std::cerr << "error: internal verification failed for reduced 5x5 "
                    "solution\n";
       return 1;
     }
-    std::cout << solver3.stringify(*solution) << '\n';
+    std::ostringstream oss;
+    for (size_t i = 0; i < solution5.size(); ++i) {
+      if (i != 0) {
+        oss << ' ';
+      }
+      oss << move_token(solution5[i]);
+    }
+    std::cout << oss.str() << '\n';
     return 0;
   } catch (const std::exception& ex) {
     std::cerr << "error: " << ex.what() << '\n';
