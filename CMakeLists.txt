@@ -9,10 +9,6 @@ add_executable(cube_solver
   src/main.cpp
 )
 
-target_compile_definitions(cube_solver PRIVATE
-  PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-
 target_compile_options(cube_solver PRIVATE
   -Wall
   -Wextra
